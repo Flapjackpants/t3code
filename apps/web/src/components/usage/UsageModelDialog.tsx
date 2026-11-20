@@ -83,6 +83,7 @@ export function UsageModelDialog({
               driverKind={presentation.driverKind}
               displayName={presentation.label}
               iconClassName="size-5"
+              acpRegistryAgentId={presentation.acpRegistryAgentId}
             />
             <DialogTitle>{model.model}</DialogTitle>
           </div>
