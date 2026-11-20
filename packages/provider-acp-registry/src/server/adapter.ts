@@ -197,6 +197,10 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
   const startupKey =
     options.settings.source === "local" ? `local:${options.instanceId}` : registryAgentId;
   const isDevin = registryAgentId === "devin";
+  const isKilo =
+    registryAgentId === "kilo" ||
+    (options.settings.source === "local" &&
+      /^kilo(\.exe|\.cmd)?$/i.test(options.settings.commandPath.split(/[\\/]/).pop() ?? ""));
   const isAntigravityCli =
     options.settings.source === "local" &&
     /^agy(\.exe|\.cmd)?$/i.test(options.settings.commandPath.split(/[\\/]/).pop() ?? "");
@@ -283,8 +287,9 @@ export const makeAcpRegistryAdapterV2 = Effect.fn("makeAcpRegistryAdapterV2")(fu
         : isOpenCode
           ? { extractElicitationForm: extractOpenCodeElicitationForm }
           : {}),
-    // glm-acp-agent is the one agent whose per-turn usage a live probe has verified.
-    ...(isGlm ? { reportsPerTurnPromptUsage: true } : {}),
+    // Live probes verified per-turn usage for these agents.
+    ...(isGlm || isDevin ? { reportsPerTurnPromptUsage: true } : {}),
+    ...(isKilo ? { reportsPerTurnPromptUsage: true, promptUsageStyle: "openCode" as const } : {}),
     ...(watchKimiPromptOutcome === undefined
       ? {}
       : {

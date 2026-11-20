@@ -219,7 +219,7 @@ describe("acpPerTurnPromptUsage", () => {
         },
         false,
         "completed",
-        true,
+        "gemini",
       ),
       {
         usageScope: "main_agent",
@@ -230,6 +230,30 @@ describe("acpPerTurnPromptUsage", () => {
         cachedInputTokens: 12119,
         cacheCreationTokens: 0,
         reasoningTokens: 19,
+      },
+    );
+    // Kilo: inputTokens excludes cached reads and outputTokens excludes thinking.
+    assert.deepEqual(
+      acpPerTurnPromptUsage(
+        {
+          inputTokens: 17317,
+          outputTokens: 2,
+          totalTokens: 19524,
+          thoughtTokens: 29,
+          cachedReadTokens: 2176,
+        },
+        false,
+        "completed",
+        "openCode",
+      ),
+      {
+        usageScope: "main_agent",
+        usageStatus: "complete",
+        hasSubagents: false,
+        inputTokens: 19493,
+        outputTokens: 31,
+        cachedInputTokens: 2176,
+        reasoningTokens: 29,
       },
     );
   });
