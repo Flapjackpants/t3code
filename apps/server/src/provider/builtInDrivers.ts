@@ -8,7 +8,11 @@ import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
 import { CursorDriver, type CursorDriverEnv } from "@t3tools/provider-cursor/server";
 import { FxDriver, type FxDriverEnv } from "@t3tools/provider-fx/server";
 import { GrokDriver, type GrokDriverEnv } from "@t3tools/provider-grok/server";
-import { OpenCodeDriver, type OpenCodeDriverEnv } from "@t3tools/provider-opencode/server";
+import {
+  kiloUsageReader,
+  OpenCodeDriver,
+  type OpenCodeDriverEnv,
+} from "@t3tools/provider-opencode/server";
 import { MuseDriver, type MuseDriverEnv } from "@t3tools/provider-muse/server";
 import { PiDriver, type PiDriverEnv } from "@t3tools/provider-pi/server";
 import type {
@@ -66,4 +70,5 @@ export const BUILT_IN_USAGE_DRIVERS: ReadonlyArray<
   MuseDriver,
   AntigravityDriver,
   CursorDriver,
+  { ...AcpRegistryDriver, usage: kiloUsageReader },
 ];

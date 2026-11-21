@@ -715,6 +715,45 @@ describe("readOpenCodeUsage", () => {
       );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it.effect("reads Kilo history from kilo.db and ignores OpenCode databases", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "usage-reader-kilo-" });
+      const base = {
+        role: "assistant",
+        sessionID: "session-1",
+        time: { created: 1780000000000 },
+        cost: 0,
+        tokens: { input: 100, output: 20 },
+      };
+      for (const [name, data] of [
+        ["kilo.db", { ...base, providerID: "kilo", modelID: "kilo-auto/free" }],
+        ["opencode.db", { ...base, providerID: "opencode", modelID: "big-pickle" }],
+      ] as const) {
+        const db = yield* openDatabase(path.join(dir, name));
+        yield* db.unsafe(
+          "CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER)",
+        );
+        yield* db.unsafe("INSERT INTO message VALUES ('msg-1', 'session-1', ?, ?)", [
+          JSON.stringify(data),
+          1780000000000,
+        ]);
+      }
+      const result = yield* readOpenCodeUsage(dir, 0, 0, "kilo");
+      assert.isFalse(result.error);
+      assert.deepStrictEqual(
+        result.files.map((file) => path.basename(file.path)),
+        ["kilo.db"],
+      );
+      const records = result.files.flatMap((file) => file.records);
+      assert.strictEqual(records.length, 1);
+      assert.strictEqual(records[0]?.provider, "kilo");
+      assert.strictEqual(records[0]?.dedupeKey, "kilo:msg-1");
+      assert.strictEqual(records[0]?.reportedCostUsd, 0);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });
 import * as NodeSqlite from "node:sqlite";
 

@@ -14,8 +14,6 @@ import type * as PlatformError from "effect/PlatformError";
 import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import type { OpenCodeSettings } from "../settings.ts";
-
 function object(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -41,6 +39,7 @@ function parseOpenCodeMessage(
     readonly sessionId?: string;
     readonly timestampMs?: number;
   } = {},
+  provider: "opencode" | "kilo" = "opencode",
 ): UsageRecord | null {
   let parsed: unknown;
   try {
@@ -69,9 +68,11 @@ function parseOpenCodeMessage(
   const id = fallback.id || text(message.id);
   const cost = message.cost;
   const prefix = LITELLM_PREFIXES.get(providerId);
-  const free = OPENCODE_GATEWAYS.has(providerId) && model.endsWith("-free");
+  const free =
+    (OPENCODE_GATEWAYS.has(providerId) && model.endsWith("-free")) ||
+    (providerId === "kilo" && (model.endsWith("/free") || model.endsWith(":free")));
   return {
-    provider: "opencode",
+    provider,
     timestampMs,
     model,
     ...(prefix !== undefined && !model.includes("/") ? { rateModel: `${prefix}/${model}` } : {}),
@@ -84,7 +85,7 @@ function parseOpenCodeMessage(
         ? cost
         : null,
     speed: "standard",
-    dedupeKey: id ? `opencode:${id}` : null,
+    dedupeKey: id ? `${provider}:${id}` : null,
   };
 }
 
@@ -130,6 +131,7 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
   root: string,
   sinceMs: number,
   retentionCutoffMs = sinceMs,
+  provider: "opencode" | "kilo" = "opencode",
 ): Effect.fn.Return<OpenCodeUsageReadResult, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -148,10 +150,12 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
     records.push(record);
   };
 
+  const databaseName = new RegExp(`^${provider}(?:-[a-zA-Z0-9_-]+)?\\.db$`);
+  const primaryDatabase = `${provider}.db`;
   const databases = yield* fileSystem.readDirectory(root).pipe(
     Effect.flatMap((names) =>
       Effect.filter(
-        names.filter((name) => /^opencode(?:-[a-zA-Z0-9_-]+)?\.db$/.test(name)),
+        names.filter((name) => databaseName.test(name)),
         (name) =>
           entryInfo(path.join(root, name)).pipe(
             Effect.map((info) => info.type === "File"),
@@ -164,7 +168,7 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
     ),
     Effect.map((names) =>
       names.sort((a, b) =>
-        a === "opencode.db" ? -1 : b === "opencode.db" ? 1 : a.localeCompare(b),
+        a === primaryDatabase ? -1 : b === primaryDatabase ? 1 : a.localeCompare(b),
       ),
     ),
     Effect.catchTags({
@@ -337,11 +341,15 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
           for (const row of rows) {
             parsed.set(
               row.row_id,
-              parseOpenCodeMessage(text(row.data), {
-                id: text(row.id),
-                sessionId: text(row.session_id),
-                ...(typeof row.created === "number" ? { timestampMs: row.created } : {}),
-              }),
+              parseOpenCodeMessage(
+                text(row.data),
+                {
+                  id: text(row.id),
+                  sessionId: text(row.session_id),
+                  ...(typeof row.created === "number" ? { timestampMs: row.created } : {}),
+                },
+                provider,
+              ),
             );
           }
           // Rows the SQL filter dropped are cached as empty so they are not read again either.
@@ -424,7 +432,7 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
             const id = name.slice(0, -5);
             // Messages cannot postdate file mtime; older files hold no in-window usage.
             const skip =
-              seen.has(`opencode:${id}`) ||
+              seen.has(`${provider}:${id}`) ||
               Option.exists(info.mtime, (mtime) => mtime.getTime() < sinceMs);
             if (found && skip) continue;
             if (yield* isSymbolicLink(entry)) continue;
@@ -433,7 +441,9 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
             const file = { path: entry, records: [] as UsageRecord[] };
             files.push(file);
             yield* fileSystem.readFileString(entry).pipe(
-              Effect.map((source) => append(file.records, parseOpenCodeMessage(source, { id }))),
+              Effect.map((source) =>
+                append(file.records, parseOpenCodeMessage(source, { id }, provider)),
+              ),
               Effect.catchTags({
                 PlatformError: (cause) => {
                   if (!isNotFound(cause)) error = true;
@@ -462,21 +472,25 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
 
 const resolveOpenCodeDataDirs = Effect.fn("resolveOpenCodeDataDirs")(function* (
   environment: NodeJS.ProcessEnv,
+  provider: "opencode" | "kilo",
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const homeDirectory = yield* HostProcess.HomeDirectory;
-  const roots = environment["OPENCODE_DATA_DIR"]
-    ?.split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
+  const roots =
+    provider === "opencode"
+      ? environment["OPENCODE_DATA_DIR"]
+          ?.split(",")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : undefined;
   const dataHome = environment["XDG_DATA_HOME"]?.trim();
   const defaults = [
     path.join(
       dataHome && path.isAbsolute(dataHome)
         ? dataHome
         : path.join(homeDirectory, ".local", "share"),
-      "opencode",
+      provider,
     ),
   ];
   const canonical = new Set<string>();
@@ -489,30 +503,38 @@ const resolveOpenCodeDataDirs = Effect.fn("resolveOpenCodeDataDirs")(function* (
 
 export type OpenCodeUsageReaderEnv = FileSystem.FileSystem | Path.Path;
 
-export const openCodeUsageReader: ProviderUsageReader<OpenCodeSettings, OpenCodeUsageReaderEnv> = {
+const usageReader = (
+  provider: "opencode" | "kilo",
+  label: string,
+): ProviderUsageReader<unknown, OpenCodeUsageReaderEnv> => ({
   kind: "scan",
-  provider: "opencode",
-  scan: Effect.fn("openCodeUsageReader.scan")(function* ({
+  provider,
+  scan: Effect.fn(`${provider === "opencode" ? "openCode" : provider}UsageReader.scan`)(function* ({
     instances,
     windowStartMs,
     retentionCutoffMs,
   }) {
     const roots = new Set<string>();
     for (const instance of instances) {
-      for (const root of yield* resolveOpenCodeDataDirs(instance.environment)) roots.add(root);
+      for (const root of yield* resolveOpenCodeDataDirs(instance.environment, provider)) {
+        roots.add(root);
+      }
     }
     return yield* Effect.forEach(
       roots,
       (dir) =>
-        readOpenCodeUsage(dir, windowStartMs, retentionCutoffMs).pipe(
+        readOpenCodeUsage(dir, windowStartMs, retentionCutoffMs, provider).pipe(
           Effect.map((result) => ({
             dir,
             files: result.missing && !result.error ? null : result.files,
             status: result.error ? ("partial" as const) : ("ok" as const),
-            ...(result.error ? { message: "Some OpenCode history could not be read." } : {}),
+            ...(result.error ? { message: `Some ${label} history could not be read.` } : {}),
           })),
         ),
       { concurrency: "unbounded" },
     );
   }),
-};
+});
+
+export const openCodeUsageReader = usageReader("opencode", "OpenCode");
+export const kiloUsageReader = usageReader("kilo", "Kilo");
